@@ -2,7 +2,7 @@ CC      = gcc
 CFLAGS  = -O2 -Wall -Wextra -g
 LDFLAGS = -libverbs
 
-TARGETS = rdma_pingpong rdma_write_bw rdma_read_lat
+TARGETS = rdma_pingpong rdma_write_bw rdma_read_lat rdma_file_send rdma_file_recv
 
 UNAME := $(shell uname)
 
@@ -22,6 +22,12 @@ rdma_write_bw: rdma_write_bw.c
 	$(CC) $(CFLAGS) -o $@ $< $(LDFLAGS)
 
 rdma_read_lat: rdma_read_lat.c
+	$(CC) $(CFLAGS) -o $@ $< $(LDFLAGS)
+
+rdma_file_send: rdma_file_send.c
+	$(CC) $(CFLAGS) -o $@ $< $(LDFLAGS)
+
+rdma_file_recv: rdma_file_recv.c
 	$(CC) $(CFLAGS) -o $@ $< $(LDFLAGS)
 
 clean:
