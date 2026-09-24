@@ -44,31 +44,33 @@
 
 /* ── data structures ─────────────────────────────────────────────────── */
 
-/* Exchanged over TCP to set up the RDMA connection and remote MR */
+/* Peer QP and memory-region metadata exchanged for RDMA WRITEs. */
 struct peer_info {
-    uint32_t qpn;
-    uint32_t psn;
-    uint16_t lid;
-    uint8_t  gid[16];
-    uint32_t rkey;
-    uint64_t addr;
+    uint32_t qpn;          /* Queue pair number used to address the peer QP. */
+    uint32_t psn;          /* Packet sequence number used to initialize the QP. */
+    uint16_t lid;          /* Local identifier used for InfiniBand routing. */
+    uint8_t  gid[16];      /* Global identifier used for RoCE or global routing. */
+    uint32_t rkey;         /* Memory-region key authorizing RDMA WRITE access. */
+    uint64_t addr;         /* Virtual address of the peer's registered buffer. */
 };
 
+/* Owns the RDMA resources and configuration used by the benchmark. */
 struct rdma_ctx {
-    struct ibv_context *ctx;
-    struct ibv_pd      *pd;
-    struct ibv_mr      *mr;
-    struct ibv_cq      *cq;
-    struct ibv_qp      *qp;
-    char               *buf;
-    int                 size;
-    int                 ib_port;
-    int                 gid_idx;
-    union ibv_gid       gid;
+    struct ibv_context *ctx;     /* Open RDMA device context. */
+    struct ibv_pd      *pd;      /* Protection domain owning RDMA resources. */
+    struct ibv_mr      *mr;      /* Registered local buffer memory region. */
+    struct ibv_cq      *cq;      /* Completion queue for RDMA work. */
+    struct ibv_qp      *qp;      /* Reliable-connected queue pair. */
+    char               *buf;     /* Aligned buffer used by RDMA WRITE operations. */
+    int                 size;    /* Write size and registered-buffer size in bytes. */
+    int                 ib_port; /* RDMA device port used by the QP. */
+    int                 gid_idx; /* GID table index, or -1 for LID mode. */
+    union ibv_gid       gid;     /* Selected local GID for global routing. */
 };
 
 /* ── helpers ─────────────────────────────────────────────────────────── */
 
+/* Returns monotonic elapsed time in microseconds. */
 static double now_us(void)
 {
     struct timespec ts;
@@ -78,6 +80,7 @@ static double now_us(void)
 
 /* ── RDMA context lifecycle ──────────────────────────────────────────── */
 
+/* Allocates and initializes the RDMA device, memory, CQ, and QP. */
 static struct rdma_ctx *ctx_create(const char *dev_name, int size,
                                    int ib_port, int gid_idx,
                                    int mr_flags)
@@ -203,6 +206,7 @@ err_buf: free(c->buf); free(c);
     return NULL;
 }
 
+/* Releases all RDMA resources owned by a context. */
 static void ctx_destroy(struct rdma_ctx *c)
 {
     ibv_destroy_qp(c->qp);
@@ -214,6 +218,7 @@ static void ctx_destroy(struct rdma_ctx *c)
     free(c);
 }
 
+/* Collects local QP and memory-region metadata for TCP exchange. */
 static void ctx_get_peer_info(struct rdma_ctx *c, struct peer_info *p)
 {
     struct ibv_port_attr pa;
@@ -229,6 +234,7 @@ static void ctx_get_peer_info(struct rdma_ctx *c, struct peer_info *p)
 }
 
 /* Transition QP from INIT → RTR → RTS using remote peer info */
+/* Applies remote addressing information and connects the local QP. */
 static int ctx_connect(struct rdma_ctx *c, const struct peer_info *rem)
 {
     /* ── INIT → RTR ── */
@@ -282,6 +288,7 @@ static int ctx_connect(struct rdma_ctx *c, const struct peer_info *rem)
 
 /* ── send/recv/write helpers ─────────────────────────────────────────── */
 
+/* Posts one RDMA WRITE operation using the local registered buffer. */
 static int post_write(struct rdma_ctx *c, uint64_t remote_addr,
                       uint32_t rkey, int send_flags)
 {
@@ -305,6 +312,7 @@ static int post_write(struct rdma_ctx *c, uint64_t remote_addr,
     return ibv_post_send(c->qp, &wr, &bad);
 }
 
+/* Posts a receive work request for the completion notification. */
 static int post_recv(struct rdma_ctx *c)
 {
     struct ibv_sge sge = {
@@ -317,6 +325,7 @@ static int post_recv(struct rdma_ctx *c)
     return ibv_post_recv(c->qp, &wr, &bad);
 }
 
+/* Posts a signaled send work request for data or completion notification. */
 static int post_send(struct rdma_ctx *c)
 {
     struct ibv_sge sge = {
@@ -336,6 +345,7 @@ static int post_send(struct rdma_ctx *c)
 }
 
 /* Spin-poll the CQ until one completion arrives */
+/* Waits for one successful completion queue entry. */
 static int poll_one(struct rdma_ctx *c)
 {
     struct ibv_wc wc;
@@ -356,6 +366,7 @@ static int poll_one(struct rdma_ctx *c)
 
 /* ── bandwidth measurement ───────────────────────────────────────────── */
 
+/* Runs the pipelined RDMA WRITE workload and prints bandwidth results. */
 static int run_bw_client(struct rdma_ctx *c, uint64_t raddr,
                          uint32_t rkey, int iters, int size)
 {
@@ -428,6 +439,7 @@ static int run_bw_client(struct rdma_ctx *c, uint64_t raddr,
 
 /* ── TCP out-of-band helpers ─────────────────────────────────────────── */
 
+/* Listens for and accepts one TCP client connection. */
 static int tcp_listen_accept(int tcp_port)
 {
     int srv, cli, opt = 1;
@@ -451,6 +463,7 @@ static int tcp_listen_accept(int tcp_port)
     return cli;
 }
 
+/* Connects to the benchmark peer over TCP. */
 static int tcp_connect_to(const char *host, int tcp_port)
 {
     struct addrinfo hints = { .ai_family = AF_UNSPEC, .ai_socktype = SOCK_STREAM };
@@ -475,6 +488,7 @@ static int tcp_connect_to(const char *host, int tcp_port)
 }
 
 /* Bidirectional exchange of peer_info structs */
+/* Exchanges local and remote peer metadata in the requested order. */
 static int xchg_peer(int fd, const struct peer_info *local,
                      struct peer_info *remote, int send_first)
 {
@@ -491,6 +505,7 @@ static int xchg_peer(int fd, const struct peer_info *local,
 
 /* ── display helpers ─────────────────────────────────────────────────── */
 
+/* Prints a 16-byte GID in colon-separated hexadecimal form. */
 static void print_gid(const uint8_t *g)
 {
     printf("%02x%02x:%02x%02x:%02x%02x:%02x%02x:"
@@ -499,6 +514,7 @@ static void print_gid(const uint8_t *g)
            g[8],g[9],g[10],g[11],g[12],g[13],g[14],g[15]);
 }
 
+/* Prints peer QP and memory-region metadata for diagnostics. */
 static void print_dest(const char *label, const struct peer_info *p, int show_gid)
 {
     printf("  %-6s QPN=0x%06x  LID=0x%04x  PSN=0x%06x"
@@ -511,6 +527,7 @@ static void print_dest(const char *label, const struct peer_info *p, int show_gi
 
 /* ── usage ───────────────────────────────────────────────────────────── */
 
+/* Prints command-line usage and option descriptions. */
 static void usage(const char *prog)
 {
     printf(
@@ -540,6 +557,7 @@ static void usage(const char *prog)
 
 /* ── main ────────────────────────────────────────────────────────────── */
 
+/* Runs the passive server or active RDMA WRITE bandwidth benchmark. */
 int main(int argc, char *argv[])
 {
     const char *dev_name = NULL;

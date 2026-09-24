@@ -12,20 +12,23 @@
 #define GID_INDEX   3
 #define CHUNK_SIZE  (256UL * 1024 * 1024)
 
+/* Connection and memory-region metadata exchanged during the RDMA handshake. */
 struct conn_info {
-    uint32_t qp_num;
-    uint16_t lid;
-    uint8_t  gid[16];
-    uint32_t rkey;
-    uint64_t remote_addr;
-    uint64_t file_size;
+    uint32_t qp_num;       /* Remote queue pair number used to address the QP. */
+    uint16_t lid;          /* Local identifier used for InfiniBand routing. */
+    uint8_t  gid[16];      /* Global identifier used for RoCE or global routing. */
+    uint32_t rkey;         /* Memory-region key authorizing remote RDMA access. */
+    uint64_t remote_addr;  /* Virtual address of the registered transfer buffer. */
+    uint64_t file_size;    /* Total file size in bytes for transfer coordination. */
 };
 
+/* Describes the file offset and length of one transfer chunk. */
 struct chunk_msg {
-    uint64_t offset;
-    uint32_t length;
+    uint64_t offset;       /* File offset where this chunk begins. */
+    uint32_t length;       /* Number of bytes in this chunk. */
 };
 
+/* Sends exactly len bytes over the TCP control connection. */
 static ssize_t send_all(int fd, const void *buf, size_t len) {
     size_t sent = 0;
     while (sent < len) {
@@ -38,6 +41,7 @@ static ssize_t send_all(int fd, const void *buf, size_t len) {
     return (ssize_t)sent;
 }
 
+/* Receives exactly len bytes from the TCP control connection. */
 static ssize_t recv_all(int fd, void *buf, size_t len) {
     size_t got = 0;
     while (got < len) {
@@ -50,6 +54,7 @@ static ssize_t recv_all(int fd, void *buf, size_t len) {
     return (ssize_t)got;
 }
 
+/* Parses arguments, establishes RDMA, and sends the file in chunks. */
 int main(int argc, char *argv[]) {
     int verbose = 0;
     int summary = 0;
